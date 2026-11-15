@@ -2,39 +2,47 @@ package org.evocraft.evoessentials.teleport;
 
 import net.minecraft.network.chat.Component;
 import net.minecraft.network.protocol.game.ClientboundSetExperiencePacket;
+import net.minecraft.resources.ResourceKey;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.world.level.Level;
 import net.minecraft.world.phys.Vec3;
 import net.minecraftforge.event.TickEvent;
 import net.minecraftforge.event.entity.player.PlayerEvent;
 import net.minecraftforge.eventbus.api.SubscribeEvent;
 import net.minecraftforge.fml.common.Mod;
 import org.evocraft.evocombat.combat.CombatLogManager;
+import org.evocraft.evoessentials.EvoEssentials;
 import org.evocraft.evoessentials.data.FlyTimeManager;
 
-import java.util.HashMap;
 import java.util.Iterator;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 
-@Mod.EventBusSubscriber(modid = "evoessentials", bus = Mod.EventBusSubscriber.Bus.FORGE)
+@Mod.EventBusSubscriber(modid = EvoEssentials.MODID, bus = Mod.EventBusSubscriber.Bus.FORGE)
 public class TeleportManager {
     // 60 de tick-uri = exact 3 secunde
     private static final int WARMUP_TICKS = 60;
 
     private static class TeleportTask {
-        ServerPlayer player;
-        Runnable action;
-        Vec3 startPos;
+        final ServerPlayer player;
+        final Runnable action;
+        final ResourceKey<Level> startDim;
+        final Vec3 startPos;
         int ticksRemaining;
 
         public TeleportTask(ServerPlayer p, Runnable a) {
-            this.player = p; this.action = a; this.startPos = p.position(); this.ticksRemaining = WARMUP_TICKS;
+            this.player = p;
+            this.action = a;
+            this.startDim = p.level().dimension();
+            this.startPos = p.position();
+            this.ticksRemaining = WARMUP_TICKS;
         }
     }
 
-    private static final Map<UUID, TeleportTask> activeTeleports = new HashMap<>();
-    private static final Map<UUID, PlayerSyncState> lastPlayerStates = new HashMap<>();
+    private static final Map<UUID, TeleportTask> activeTeleports = new ConcurrentHashMap<>();
+    private static final Map<UUID, PlayerSyncState> lastPlayerStates = new ConcurrentHashMap<>();
 
     private static class PlayerSyncState {
         final boolean mayfly;
@@ -53,11 +61,13 @@ public class TeleportManager {
     }
 
     public static void queueTeleport(ServerPlayer player, String destinationName, Runnable action) {
+        if (player == null || action == null || player.hasDisconnected()) return;
         activeTeleports.put(player.getUUID(), new TeleportTask(player, action));
         player.sendSystemMessage(Component.literal("§e[EvoCore] Teleporting to " + destinationName + " in 3 seconds. Do not move!"));
     }
 
     public static void runWithStatePreserved(ServerPlayer player, Runnable action) {
+        if (player == null || action == null) return;
         PlayerSyncState state = new PlayerSyncState(player);
         try {
             action.run();
@@ -72,9 +82,14 @@ public class TeleportManager {
             Iterator<Map.Entry<UUID, TeleportTask>> it = activeTeleports.entrySet().iterator();
             while (it.hasNext()) {
                 TeleportTask task = it.next().getValue();
+                if (task.player.hasDisconnected() || !task.player.isAlive()) {
+                    it.remove();
+                    continue;
+                }
 
-                // Daca jucatorul s-a miscat mai mult de jumatate de bloc (toleram doar rotirea camerei)
-                if (task.player.position().distanceToSqr(task.startPos) > 0.25) {
+                // Daca jucatorul s-a miscat mai mult de jumatate de bloc sau a schimbat dimensiunea
+                if (!task.player.level().dimension().equals(task.startDim)
+                        || task.player.position().distanceToSqr(task.startPos) > 0.25) {
                     task.player.sendSystemMessage(Component.literal("§c[EvoCore] You moved! Teleport cancelled."));
                     it.remove();
                     continue;
@@ -82,8 +97,8 @@ public class TeleportManager {
 
                 task.ticksRemaining--;
                 if (task.ticksRemaining <= 0) {
-                    runWithStatePreserved(task.player, task.action);
                     it.remove();
+                    runWithStatePreserved(task.player, task.action);
                 }
             }
         }

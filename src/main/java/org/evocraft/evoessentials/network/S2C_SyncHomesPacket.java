@@ -22,17 +22,20 @@ public class S2C_SyncHomesPacket {
         this.currentCount = buf.readInt();
         this.maxCount = buf.readInt();
         this.homes = new ArrayList<>();
-        int size = buf.readInt();
-        for (int i = 0; i < size; i++) this.homes.add(buf.readUtf());
+        int size = Math.max(0, Math.min(256, buf.readInt()));
+        for (int i = 0; i < size; i++) this.homes.add(buf.readUtf(64));
     }
 
     public void toBytes(FriendlyByteBuf buf) {
         buf.writeInt(currentCount);
         buf.writeInt(maxCount);
-        buf.writeInt(homes.size());
-        for (String home : homes) {
+        List<String> safeHomes = homes != null ? homes : List.of();
+        int count = Math.min(256, safeHomes.size());
+        buf.writeInt(count);
+        for (int i = 0; i < count; i++) {
+            String home = safeHomes.get(i);
             // Blindaj suprem anti-crash!
-            buf.writeUtf(home != null ? home : "Unknown");
+            buf.writeUtf(home != null ? home : "Unknown", 64);
         }
     }
 

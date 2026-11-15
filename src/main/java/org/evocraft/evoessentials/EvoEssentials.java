@@ -17,7 +17,9 @@ public class EvoEssentials {
         MinecraftForge.EVENT_BUS.register(this);
     }
 
-    private void setup(final net.minecraftforge.fml.event.lifecycle.FMLCommonSetupEvent event) {}
+    private void setup(final net.minecraftforge.fml.event.lifecycle.FMLCommonSetupEvent event) {
+        event.enqueueWork(org.evocraft.evoessentials.network.EssentialsPacketHandler::register);
+    }
 
     @SubscribeEvent
     public void onServerStarting(net.minecraftforge.event.server.ServerStartingEvent event) {
@@ -29,6 +31,8 @@ public class EvoEssentials {
     @SubscribeEvent
     public void onServerStopping(net.minecraftforge.event.server.ServerStoppingEvent event) {
         org.evocraft.evoessentials.data.WarpManager.get().save();
+        org.evocraft.evoessentials.data.WarnManager.shutdown();
+        org.evocraft.evoessentials.teleport.HomeManager.shutdown();
     }
 
     @SubscribeEvent

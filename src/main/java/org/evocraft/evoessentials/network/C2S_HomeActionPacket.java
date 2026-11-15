@@ -19,13 +19,13 @@ public class C2S_HomeActionPacket {
     }
 
     public C2S_HomeActionPacket(FriendlyByteBuf buf) {
-        this.action = buf.readUtf();
-        this.homeName = buf.readUtf();
+        this.action = buf.readUtf(16);
+        this.homeName = buf.readUtf(64);
     }
 
     public void toBytes(FriendlyByteBuf buf) {
-        buf.writeUtf(action);
-        buf.writeUtf(homeName);
+        buf.writeUtf(action != null ? action : "", 16);
+        buf.writeUtf(homeName != null ? homeName : "", 64);
     }
 
     public boolean handle(Supplier<NetworkEvent.Context> supplier) {

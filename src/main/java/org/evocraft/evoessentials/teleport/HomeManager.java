@@ -3,6 +3,7 @@ package org.evocraft.evoessentials.teleport;
 import net.minecraft.network.chat.Component;
 import net.minecraft.resources.ResourceKey;
 import net.minecraft.resources.ResourceLocation;
+import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.core.registries.Registries;
@@ -15,6 +16,9 @@ import net.minecraftforge.server.permission.events.PermissionGatherEvent;
 import net.minecraftforge.server.permission.nodes.PermissionNode;
 import net.minecraftforge.server.permission.nodes.PermissionTypes;
 import org.evocraft.evocore.database.DatabaseManager;
+import org.evocraft.evoessentials.EvoEssentials;
+import org.evocraft.evoessentials.network.EssentialsPacketHandler;
+import org.evocraft.evoessentials.network.S2C_SyncHomesPacket;
 
 import java.sql.Connection;
 import java.sql.PreparedStatement;
@@ -27,10 +31,15 @@ import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 
-@Mod.EventBusSubscriber(modid = "evoessentials", bus = Mod.EventBusSubscriber.Bus.FORGE)
+@Mod.EventBusSubscriber(modid = EvoEssentials.MODID, bus = Mod.EventBusSubscriber.Bus.FORGE)
 public class HomeManager {
-    private static HomeManager INSTANCE;
+    private static volatile HomeManager INSTANCE;
+    private static volatile ExecutorService dbExecutor = createExecutor();
+
     private final Map<UUID, Map<String, HomeLocation>> playerHomes = new ConcurrentHashMap<>();
     private final Set<UUID> loadedPlayers = ConcurrentHashMap.newKeySet();
 
@@ -42,6 +51,35 @@ public class HomeManager {
     public static final PermissionNode<Boolean> PERM_HOME_5 = new PermissionNode<>(new ResourceLocation("evocore:homes.5"), PermissionTypes.BOOLEAN, (p, u, c) -> false);
     public static final PermissionNode<Boolean> PERM_HOME_3 = new PermissionNode<>(new ResourceLocation("evocore:homes.3"), PermissionTypes.BOOLEAN, (p, u, c) -> false);
 
+    private static ExecutorService createExecutor() {
+        return Executors.newSingleThreadExecutor(r -> {
+            Thread t = new Thread(r, "EvoEssentials-Homes-DB");
+            t.setDaemon(true);
+            return t;
+        });
+    }
+
+    private static synchronized ExecutorService getExecutor() {
+        if (dbExecutor == null || dbExecutor.isShutdown()) {
+            dbExecutor = createExecutor();
+        }
+        return dbExecutor;
+    }
+
+    public static synchronized void shutdown() {
+        if (dbExecutor != null && !dbExecutor.isShutdown()) {
+            dbExecutor.shutdown();
+            try {
+                if (!dbExecutor.awaitTermination(5, TimeUnit.SECONDS)) {
+                    dbExecutor.shutdownNow();
+                }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                dbExecutor.shutdownNow();
+            }
+        }
+    }
+
     @SubscribeEvent
     public static void onPermissionGather(PermissionGatherEvent.Nodes event) {
         event.addNodes(PERM_HOME_16, PERM_HOME_14, PERM_HOME_12, PERM_HOME_10, PERM_HOME_8, PERM_HOME_5, PERM_HOME_3);
@@ -51,32 +89,33 @@ public class HomeManager {
     public static void onPlayerJoin(PlayerEvent.PlayerLoggedInEvent event) {
         if (event.getEntity() instanceof ServerPlayer player) {
             UUID uuid = player.getUUID();
-            net.minecraft.server.MinecraftServer server = player.getServer();
-            Thread loader = new Thread(() -> {
+            MinecraftServer server = player.getServer();
+            getExecutor().execute(() -> {
                 if (get().loadPlayerHomes(uuid) && server != null) {
                     server.execute(() -> {
                         ServerPlayer onlinePlayer = server.getPlayerList().getPlayer(uuid);
-                        if (onlinePlayer != null) {
+                        if (onlinePlayer != null && !onlinePlayer.hasDisconnected()) {
                             get().syncHomes(onlinePlayer);
                         }
                     });
                 }
-            }, "EvoCore-Home-Load-" + uuid);
-            loader.setDaemon(true);
-            loader.start();
+            });
         }
     }
 
     @SubscribeEvent
     public static void onPlayerLeave(PlayerEvent.PlayerLoggedOutEvent event) {
         UUID uuid = event.getEntity().getUUID();
-        get().playerHomes.remove(uuid);
-        get().loadedPlayers.remove(uuid);
+        HomeManager mgr = INSTANCE;
+        if (mgr != null) {
+            mgr.playerHomes.remove(uuid);
+            mgr.loadedPlayers.remove(uuid);
+        }
     }
 
     public HomeManager() {}
-    public static void initialize() { if (INSTANCE == null) INSTANCE = new HomeManager(); }
-    public static HomeManager get() { return INSTANCE; }
+    public static synchronized void initialize() { if (INSTANCE == null) INSTANCE = new HomeManager(); }
+    public static synchronized HomeManager get() { if (INSTANCE == null) initialize(); return INSTANCE; }
 
     public static class HomeLocation {
         public String dimension; public double x, y, z; public float yaw, pitch;
@@ -86,6 +125,7 @@ public class HomeManager {
     }
 
     public synchronized boolean loadPlayerHomes(UUID uuid) {
+        if (uuid == null) return false;
         if (loadedPlayers.contains(uuid)) {
             return true;
         }
@@ -95,14 +135,24 @@ public class HomeManager {
         try {
             synchronized (DatabaseManager.get()) {
                 Connection conn = DatabaseManager.get().getConnection();
+                if (conn == null) return false;
                 try (PreparedStatement stmt = conn.prepareStatement(query)) {
                     stmt.setString(1, uuid.toString());
-                    ResultSet rs = stmt.executeQuery();
-                    while (rs.next()) {
-                        homes.put(rs.getString("home_name"), new HomeLocation(
-                                rs.getString("dimension"), rs.getDouble("x"), rs.getDouble("y"), rs.getDouble("z"),
-                                rs.getFloat("yaw"), rs.getFloat("pitch")
-                        ));
+                    try (ResultSet rs = stmt.executeQuery()) {
+                        while (rs.next()) {
+                            String homeName = rs.getString("home_name");
+                            String dim = rs.getString("dimension");
+                            double x = rs.getDouble("x");
+                            double y = rs.getDouble("y");
+                            double z = rs.getDouble("z");
+                            if (homeName == null || homeName.isBlank() || dim == null || dim.isBlank()
+                                    || !Double.isFinite(x) || !Double.isFinite(y) || !Double.isFinite(z)) {
+                                continue;
+                            }
+                            homes.put(homeName.toLowerCase(Locale.ROOT), new HomeLocation(
+                                    dim, x, y, z, rs.getFloat("yaw"), rs.getFloat("pitch")
+                            ));
+                        }
                     }
                 }
             }
@@ -130,6 +180,7 @@ public class HomeManager {
     }
 
     public void syncHomes(ServerPlayer player) {
+        if (player == null || player.hasDisconnected()) return;
         UUID uuid = player.getUUID();
         if (!loadedPlayers.contains(uuid)) {
             loadPlayerHomes(uuid);
@@ -137,17 +188,28 @@ public class HomeManager {
 
         Map<String, HomeLocation> homes = playerHomes.getOrDefault(uuid, Collections.emptyMap());
         List<String> homeNames = new ArrayList<>(homes.keySet());
-        org.evocraft.evocore.network.PacketHandler.sendToPlayer(new org.evocraft.evoessentials.network.S2C_SyncHomesPacket(homes.size(), getMaxHomes(player), homeNames), player);
+        EssentialsPacketHandler.sendToPlayer(new S2C_SyncHomesPacket(homes.size(), getMaxHomes(player), homeNames), player);
     }
 
     public void setHome(ServerPlayer player, String homeName) {
+        if (player == null) return;
+        if (homeName == null || homeName.trim().isEmpty()) {
+            player.sendSystemMessage(Component.literal("§c[EvoCore] Home name cannot be empty!"));
+            return;
+        }
+        String cleanHomeName = homeName.trim();
+        if (cleanHomeName.length() > 50) {
+            player.sendSystemMessage(Component.literal("§c[EvoCore] Home name cannot exceed 50 characters!"));
+            return;
+        }
+
         UUID uuid = player.getUUID();
         if (!loadedPlayers.contains(uuid)) {
             loadPlayerHomes(uuid);
         }
 
         Map<String, HomeLocation> homes = getHomes(uuid);
-        String name = homeName.toLowerCase(Locale.ROOT);
+        String name = cleanHomeName.toLowerCase(Locale.ROOT);
 
         if (!homes.containsKey(name) && homes.size() >= getMaxHomes(player)) {
             player.sendSystemMessage(Component.literal("§c[EvoCore] You reached the maximum home limit (" + getMaxHomes(player) + ")!"));
@@ -159,76 +221,100 @@ public class HomeManager {
         homes.put(name, loc);
         String uuidString = uuid.toString();
 
-        new Thread(() -> {
+        getExecutor().execute(() -> {
             try {
                 synchronized (DatabaseManager.get()) {
                     Connection conn = DatabaseManager.get().getConnection();
-                    try (PreparedStatement del = conn.prepareStatement("DELETE FROM player_homes WHERE uuid = ? AND home_name = ?")) {
-                        del.setString(1, uuidString); del.setString(2, name); del.executeUpdate();
-                    }
-                    try (PreparedStatement ins = conn.prepareStatement("INSERT INTO player_homes (uuid, home_name, dimension, x, y, z, yaw, pitch) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")) {
-                        ins.setString(1, uuidString); ins.setString(2, name); ins.setString(3, loc.dimension);
-                        ins.setDouble(4, loc.x); ins.setDouble(5, loc.y); ins.setDouble(6, loc.z);
-                        ins.setFloat(7, loc.yaw); ins.setFloat(8, loc.pitch); ins.executeUpdate();
+                    if (conn == null) return;
+                    boolean mySql = DatabaseManager.get().isMySql();
+                    String upsert = mySql
+                            ? "INSERT INTO player_homes (uuid, home_name, dimension, x, y, z, yaw, pitch) VALUES (?, ?, ?, ?, ?, ?, ?, ?) " +
+                              "ON DUPLICATE KEY UPDATE dimension=VALUES(dimension), x=VALUES(x), y=VALUES(y), z=VALUES(z), yaw=VALUES(yaw), pitch=VALUES(pitch)"
+                            : "INSERT INTO player_homes (uuid, home_name, dimension, x, y, z, yaw, pitch) VALUES (?, ?, ?, ?, ?, ?, ?, ?) " +
+                              "ON CONFLICT(uuid, home_name) DO UPDATE SET dimension=excluded.dimension, x=excluded.x, y=excluded.y, z=excluded.z, yaw=excluded.yaw, pitch=excluded.pitch";
+                    try (PreparedStatement ins = conn.prepareStatement(upsert)) {
+                        ins.setString(1, uuidString);
+                        ins.setString(2, name);
+                        ins.setString(3, loc.dimension);
+                        ins.setDouble(4, loc.x);
+                        ins.setDouble(5, loc.y);
+                        ins.setDouble(6, loc.z);
+                        ins.setFloat(7, loc.yaw);
+                        ins.setFloat(8, loc.pitch);
+                        ins.executeUpdate();
                     }
                 }
             } catch (Exception e) { e.printStackTrace(); }
-        }).start();
+        });
 
-        player.sendSystemMessage(Component.literal("§a[EvoCore] Home '§e" + homeName + "§a' has been set!"));
+        player.sendSystemMessage(Component.literal("§a[EvoCore] Home '§e" + cleanHomeName + "§a' has been set!"));
         syncHomes(player);
     }
 
     public void delHome(ServerPlayer player, String homeName) {
+        if (player == null) return;
+        if (homeName == null || homeName.trim().isEmpty()) {
+            player.sendSystemMessage(Component.literal("§c[EvoCore] Home name cannot be empty!"));
+            return;
+        }
+        String cleanHomeName = homeName.trim();
+
         UUID uuid = player.getUUID();
         if (!loadedPlayers.contains(uuid)) {
             loadPlayerHomes(uuid);
         }
 
         Map<String, HomeLocation> homes = getHomes(uuid);
-        String name = homeName.toLowerCase(Locale.ROOT);
+        String name = cleanHomeName.toLowerCase(Locale.ROOT);
         String uuidString = uuid.toString();
 
         if (homes.remove(name) != null) {
-            new Thread(() -> {
+            getExecutor().execute(() -> {
                 try {
                     synchronized (DatabaseManager.get()) {
                         Connection conn = DatabaseManager.get().getConnection();
+                        if (conn == null) return;
                         try (PreparedStatement stmt = conn.prepareStatement("DELETE FROM player_homes WHERE uuid = ? AND home_name = ?")) {
                             stmt.setString(1, uuidString); stmt.setString(2, name); stmt.executeUpdate();
                         }
                     }
                 } catch (Exception e) { e.printStackTrace(); }
-            }).start();
+            });
 
-            player.sendSystemMessage(Component.literal("§a[EvoCore] Home '§e" + homeName + "§a' has been deleted!"));
+            player.sendSystemMessage(Component.literal("§a[EvoCore] Home '§e" + cleanHomeName + "§a' has been deleted!"));
             syncHomes(player);
         } else {
-            player.sendSystemMessage(Component.literal("§c[EvoCore] You do not have a home named '" + homeName + "'!"));
+            player.sendSystemMessage(Component.literal("§c[EvoCore] You do not have a home named '" + cleanHomeName + "'!"));
         }
     }
 
     public void teleportHome(ServerPlayer player, String homeName) {
+        if (player == null || homeName == null || homeName.trim().isEmpty()) return;
+        String cleanHomeName = homeName.trim();
         UUID uuid = player.getUUID();
         if (!loadedPlayers.contains(uuid)) {
             loadPlayerHomes(uuid);
         }
 
         Map<String, HomeLocation> homes = getHomes(uuid);
-        String name = homeName.toLowerCase(Locale.ROOT);
+        String name = cleanHomeName.toLowerCase(Locale.ROOT);
 
-        if (!homes.containsKey(name)) {
-            player.sendSystemMessage(Component.literal("§c[EvoCore] You do not have a home named '" + homeName + "'!"));
+        HomeLocation loc = homes.get(name);
+        if (loc == null) {
+            player.sendSystemMessage(Component.literal("§c[EvoCore] You do not have a home named '" + cleanHomeName + "'!"));
             return;
         }
 
-        HomeLocation loc = homes.get(name);
-        ServerLevel level = ServerLifecycleHooks.getCurrentServer().getLevel(ResourceKey.create(Registries.DIMENSION, new ResourceLocation(loc.dimension)));
+        ResourceLocation dimLoc = ResourceLocation.tryParse(loc.dimension);
+        MinecraftServer server = ServerLifecycleHooks.getCurrentServer();
+        ServerLevel level = (dimLoc != null && server != null) ? server.getLevel(ResourceKey.create(Registries.DIMENSION, dimLoc)) : null;
 
-        if (level != null) {
-            TeleportManager.queueTeleport(player, "Home: " + homeName, () -> {
-                player.teleportTo(level, loc.x, loc.y, loc.z, loc.yaw, loc.pitch);
-                player.sendSystemMessage(Component.literal("§a[EvoCore] Teleported to '§e" + homeName + "§a'!"));
+        if (level != null && Double.isFinite(loc.x) && Double.isFinite(loc.y) && Double.isFinite(loc.z)) {
+            TeleportManager.queueTeleport(player, "Home: " + cleanHomeName, () -> {
+                if (!player.hasDisconnected() && player.isAlive()) {
+                    player.teleportTo(level, loc.x, loc.y, loc.z, loc.yaw, loc.pitch);
+                    player.sendSystemMessage(Component.literal("§a[EvoCore] Teleported to '§e" + cleanHomeName + "§a'!"));
+                }
             });
         } else {
             player.sendSystemMessage(Component.literal("§c[EvoCore] Error! The home dimension no longer exists."));

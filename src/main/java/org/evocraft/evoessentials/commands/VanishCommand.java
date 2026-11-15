@@ -17,7 +17,7 @@ public class VanishCommand {
                         net.luckperms.api.LuckPerms lp = net.luckperms.api.LuckPermsProvider.get();
                         net.luckperms.api.model.user.User user = lp.getUserManager().getUser(source.getPlayerOrException().getUUID());
                         return user != null && user.getCachedData().getPermissionData().checkPermission("evocore.vanish").asBoolean();
-                    } catch (Exception e) {
+                    } catch (Throwable e) {
                         return source.hasPermission(2);
                     }
                 }) // Folosind LuckPerms
@@ -35,7 +35,7 @@ public class VanishCommand {
                         net.luckperms.api.LuckPerms lp = net.luckperms.api.LuckPermsProvider.get();
                         net.luckperms.api.model.user.User user = lp.getUserManager().getUser(source.getPlayerOrException().getUUID());
                         return user != null && user.getCachedData().getPermissionData().checkPermission("evocore.vanish").asBoolean();
-                    } catch (Exception e) {
+                    } catch (Throwable e) {
                         return source.hasPermission(2);
                     }
                 })

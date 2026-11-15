@@ -82,20 +82,32 @@ public class TempBanCommand {
 
     // Funcție de transformare "1d", "5h", "30m" în Milisecunde
     private static long parseTime(String timeStr) {
+        if (timeStr == null) return 0;
+        String lower = timeStr.trim().toLowerCase(java.util.Locale.ROOT);
+        if (!lower.matches("^(?:\\d+[dhms])+$")) {
+            return 0;
+        }
         long totalMillis = 0;
         Pattern pattern = Pattern.compile("(\\d+)([dhms])");
-        Matcher matcher = pattern.matcher(timeStr.toLowerCase());
+        Matcher matcher = pattern.matcher(lower);
 
-        while (matcher.find()) {
-            long value = Long.parseLong(matcher.group(1));
-            String unit = matcher.group(2);
+        try {
+            while (matcher.find()) {
+                long value = Long.parseLong(matcher.group(1));
+                if (value <= 0) return 0;
+                String unit = matcher.group(2);
 
-            switch (unit) {
-                case "d": totalMillis += value * 24L * 60 * 60 * 1000; break;
-                case "h": totalMillis += value * 60 * 60 * 1000; break;
-                case "m": totalMillis += value * 60 * 1000; break;
-                case "s": totalMillis += value * 1000; break;
+                long factor = switch (unit) {
+                    case "d" -> 24L * 60 * 60 * 1000;
+                    case "h" -> 60L * 60 * 1000;
+                    case "m" -> 60L * 1000;
+                    case "s" -> 1000L;
+                    default -> 0L;
+                };
+                totalMillis = Math.addExact(totalMillis, Math.multiplyExact(value, factor));
             }
+        } catch (NumberFormatException | ArithmeticException e) {
+            return 0;
         }
         return totalMillis;
     }
