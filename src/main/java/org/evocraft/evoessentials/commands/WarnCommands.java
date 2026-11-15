@@ -49,17 +49,34 @@ public class WarnCommands {
                 .requires(source -> hasLuckPermission(source, "evocore.warn.view"))
                 .then(Commands.argument("player", EntityArgument.player())
                         .executes(context -> {
+                            CommandSourceStack source = context.getSource();
                             ServerPlayer target = EntityArgument.getPlayer(context, "player");
+                            net.minecraft.server.MinecraftServer server = source.getServer();
+                            java.util.UUID targetUuid = target.getUUID();
+                            String targetName = target.getName().getString();
 
                             // Executăm asincron pentru a nu bloca serverul la citirea din DB
-                            new Thread(() -> {
-                                List<WarnManager.WarnEntry> warns = WarnManager.getWarns(target.getUUID());
-                                context.getSource().sendSuccess(() -> Component.literal("§e§lWarnings for " + target.getName().getString() + " (§c" + warns.size() + "§e):"), false);
-
-                                for (WarnManager.WarnEntry w : warns) {
-                                    context.getSource().sendSuccess(() -> Component.literal("§6#" + w.id() + " §8| §f" + w.reason() + " §8| §7Admin: §e" + w.admin() + " §8| §b" + w.date().substring(0, 10)), false);
+                            Thread t = new Thread(() -> {
+                                List<WarnManager.WarnEntry> warns = WarnManager.getWarns(targetUuid);
+                                if (server != null) {
+                                    server.execute(() -> {
+                                        source.sendSuccess(() -> Component.literal("§e§lWarnings for " + targetName + " (§c" + warns.size() + "§e):"), false);
+                                        if (warns.isEmpty()) {
+                                            source.sendSuccess(() -> Component.literal("§7This player has no warnings."), false);
+                                            return;
+                                        }
+                                        for (WarnManager.WarnEntry w : warns) {
+                                            String rawDate = w.date();
+                                            String shortDate = (rawDate != null && rawDate.length() >= 10)
+                                                    ? rawDate.substring(0, 10)
+                                                    : (rawDate != null && !rawDate.isEmpty() ? rawDate : "unknown");
+                                            source.sendSuccess(() -> Component.literal("§6#" + w.id() + " §8| §f" + w.reason() + " §8| §7Admin: §e" + w.admin() + " §8| §b" + shortDate), false);
+                                        }
+                                    });
                                 }
-                            }).start();
+                            }, "EvoEssentials-WarnQuery");
+                            t.setDaemon(true);
+                            t.start();
 
                             return 1;
                         })
@@ -73,9 +90,19 @@ public class WarnCommands {
                 .requires(source -> hasLuckPermission(source, "evocore.warn.remove"))
                 .then(Commands.argument("id", IntegerArgumentType.integer(1))
                         .executes(context -> {
+                            CommandSourceStack source = context.getSource();
+                            net.minecraft.server.MinecraftServer server = source.getServer();
                             int id = IntegerArgumentType.getInteger(context, "id");
-                            WarnManager.removeWarn(id, () -> {
-                                context.getSource().sendSuccess(() -> Component.literal("§a✔ Warning #" + id + " was removed successfully!"), true);
+                            WarnManager.removeWarn(id, removed -> {
+                                if (server != null) {
+                                    server.execute(() -> {
+                                        if (removed) {
+                                            source.sendSuccess(() -> Component.literal("§a✔ Warning #" + id + " was removed successfully!"), true);
+                                        } else {
+                                            source.sendFailure(Component.literal("§c✖ Warning #" + id + " was not found."));
+                                        }
+                                    });
+                                }
                             });
                             return 1;
                         })
@@ -89,6 +116,6 @@ public class WarnCommands {
             net.luckperms.api.LuckPerms lp = net.luckperms.api.LuckPermsProvider.get();
             net.luckperms.api.model.user.User user = lp.getUserManager().getUser(source.getPlayerOrException().getUUID());
             return user != null && user.getCachedData().getPermissionData().checkPermission(permission).asBoolean();
-        } catch (Exception e) { return source.hasPermission(2); }
+        } catch (Throwable e) { return source.hasPermission(2); }
     }
 }

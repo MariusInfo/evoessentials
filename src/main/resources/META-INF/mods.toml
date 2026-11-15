@@ -4,7 +4,7 @@ license="All Rights Reserved"
 
 [[mods]]
 modId="evoessentials"
-version="1.0"
+version="${mod_version}"
 displayName="EvoEssentials"
 authors="EvoCraft"
 description="Essentials commands and teleportation module for EvoNetwork"
@@ -23,6 +23,12 @@ description="Essentials commands and teleportation module for EvoNetwork"
     side="BOTH"
 [[dependencies.evoessentials]]
     modId="evocore"
+    mandatory=true
+    versionRange="[1.0,)"
+    ordering="AFTER"
+    side="BOTH"
+[[dependencies.evoessentials]]
+    modId="evocombat"
     mandatory=true
     versionRange="[1.0,)"
     ordering="AFTER"

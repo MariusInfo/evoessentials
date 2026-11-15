@@ -46,6 +46,10 @@ public class EconomyCommands {
                                         .executes(ctx -> {
                                             ServerPlayer target = EntityArgument.getPlayer(ctx, "target");
                                             double amount = DoubleArgumentType.getDouble(ctx, "amount");
+                                            if (!Double.isFinite(amount) || amount <= 0.0) {
+                                                ctx.getSource().sendFailure(Component.literal("§cInvalid amount."));
+                                                return 0;
+                                            }
                                             EconomyManager.get().addBalance(target.getUUID(), amount);
                                             ctx.getSource().sendSuccess(() -> Component.literal("§a[!] Added §e" + EvoCurrencyFormatter.formatWithCurrency(amount) + "§a to " + target.getGameProfile().getName()), true);
                                             target.sendSystemMessage(Component.literal("§a[EvoBank] §fYou received §e" + EvoCurrencyFormatter.formatWithCurrency(amount) + "§f from an admin."));
@@ -58,6 +62,10 @@ public class EconomyCommands {
                                         .executes(ctx -> {
                                             ServerPlayer target = EntityArgument.getPlayer(ctx, "target");
                                             double amount = DoubleArgumentType.getDouble(ctx, "amount");
+                                            if (!Double.isFinite(amount) || amount < 0.0) {
+                                                ctx.getSource().sendFailure(Component.literal("§cInvalid amount."));
+                                                return 0;
+                                            }
                                             EconomyManager.get().setBalance(target.getUUID(), amount);
                                             ctx.getSource().sendSuccess(() -> Component.literal("§a[!] Set " + target.getGameProfile().getName() + "'s balance to §e" + EvoCurrencyFormatter.formatWithCurrency(amount)), true);
                                             return 1;

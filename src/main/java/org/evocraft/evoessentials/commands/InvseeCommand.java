@@ -23,7 +23,7 @@ public class InvseeCommand {
                         net.luckperms.api.LuckPerms lp = net.luckperms.api.LuckPermsProvider.get();
                         net.luckperms.api.model.user.User user = lp.getUserManager().getUser(source.getPlayerOrException().getUUID());
                         return user != null && user.getCachedData().getPermissionData().checkPermission("evocore.invsee").asBoolean();
-                    } catch (Exception e) {
+                    } catch (Throwable e) {
                         return source.hasPermission(2);
                     }
                 })
@@ -50,8 +50,10 @@ public class InvseeCommand {
                                 @Override public void setChanged() { targetPlayer.getInventory().setChanged(); }
                                 @Override public void clearContent() { targetPlayer.getInventory().clearContent(); }
 
-                                // AICI E SECRETUL: Serverul nu va mai închide meniul din cauza distanței!
-                                @Override public boolean stillValid(Player player) { return true; }
+                                // Nu închide pe distanță, dar închide dacă ținta devine offline/moartă
+                                @Override public boolean stillValid(Player player) {
+                                    return !sourcePlayer.isSpectator() && targetPlayer.isAlive() && !targetPlayer.hasDisconnected();
+                                }
                             };
 
                             sourcePlayer.openMenu(new SimpleMenuProvider(

@@ -53,7 +53,7 @@ public class GodCommand {
             net.luckperms.api.LuckPerms lp = net.luckperms.api.LuckPermsProvider.get();
             net.luckperms.api.model.user.User user = lp.getUserManager().getUser(source.getPlayerOrException().getUUID());
             return user != null && user.getCachedData().getPermissionData().checkPermission(permission).asBoolean();
-        } catch (Exception e) {
+        } catch (Throwable e) {
             return source.hasPermission(2); // Dacă dă eroare (ex: execută consola), verifică OP
         }
     }

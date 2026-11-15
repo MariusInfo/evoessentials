@@ -22,22 +22,21 @@ import net.minecraftforge.event.TickEvent;
 import net.minecraftforge.event.entity.player.PlayerEvent;
 import net.minecraftforge.eventbus.api.SubscribeEvent;
 import net.minecraftforge.fml.common.Mod;
-import org.evocraft.evocore.EvoCore;
 import org.evocraft.evocore.network.PacketHandler;
+import org.evocraft.evoessentials.EvoEssentials;
 
 import java.util.ArrayList;
 import java.util.Collections;
-import java.util.HashMap;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 
-@Mod.EventBusSubscriber(modid = EvoCore.MODID)
+@Mod.EventBusSubscriber(modid = EvoEssentials.MODID)
 public class VanishManager {
-    public static final Set<UUID> vanishedPlayers = new HashSet<>();
-    private static final Map<UUID, GameType> previousGameModes = new HashMap<>();
+    public static final Set<UUID> vanishedPlayers = ConcurrentHashMap.newKeySet();
+    private static final Map<UUID, GameType> previousGameModes = new ConcurrentHashMap<>();
 
     public static int toggleVanish(ServerPlayer player) {
         UUID uuid = player.getUUID();
@@ -84,10 +83,11 @@ public class VanishManager {
         if (event.getEntity() instanceof ServerPlayer sp) {
             PacketHandler.sendToPlayer(new PacketHandler.S2C_SyncVanish(new ArrayList<>(vanishedPlayers)), sp);
 
-            if (vanishedPlayers.contains(sp.getUUID())) {
+            boolean vanished = vanishedPlayers.contains(sp.getUUID());
+            if (vanished) {
                 sp.setGameMode(GameType.SPECTATOR);
-                PacketHandler.sendToPlayer(new PacketHandler.S2C_VanishHUD(true), sp);
             }
+            PacketHandler.sendToPlayer(new PacketHandler.S2C_VanishHUD(vanished), sp);
 
             scheduleHideVanishedFrom(sp);
         }
@@ -96,9 +96,12 @@ public class VanishManager {
     @SubscribeEvent
     public static void onPlayerQuit(PlayerEvent.PlayerLoggedOutEvent event) {
         if (event.getEntity() instanceof ServerPlayer player) {
-            if (vanishedPlayers.remove(player.getUUID())) {
+            boolean wasVanished = vanishedPlayers.remove(player.getUUID());
+            if (wasVanished) {
                 restorePreviousGameMode(player);
                 PacketHandler.sendToAll(new PacketHandler.S2C_SyncVanish(new ArrayList<>(vanishedPlayers)));
+            } else {
+                previousGameModes.remove(player.getUUID());
             }
         }
     }
@@ -113,6 +116,7 @@ public class VanishManager {
     }
 
     public static int getRealOnlineCount(net.minecraft.server.MinecraftServer server) {
+        if (server == null) return 0;
         int count = 0;
         for (ServerPlayer p : server.getPlayerList().getPlayers()) {
             if (!vanishedPlayers.contains(p.getUUID())) {
@@ -123,7 +127,7 @@ public class VanishManager {
     }
 
     public static boolean isVanished(UUID uuid) {
-        return vanishedPlayers.contains(uuid);
+        return uuid != null && vanishedPlayers.contains(uuid);
     }
 
     public static boolean isVanished(ServerPlayer player) {
@@ -131,13 +135,17 @@ public class VanishManager {
     }
 
     private static void hideFromAllPlayers(ServerPlayer vanished) {
-        for (ServerPlayer observer : vanished.getServer().getPlayerList().getPlayers()) {
+        MinecraftServer server = vanished.getServer();
+        if (server == null) return;
+        for (ServerPlayer observer : server.getPlayerList().getPlayers()) {
             hideFromObserver(vanished, observer);
         }
     }
 
     private static void showToAllPlayers(ServerPlayer visible) {
-        for (ServerPlayer observer : visible.getServer().getPlayerList().getPlayers()) {
+        MinecraftServer server = visible.getServer();
+        if (server == null) return;
+        for (ServerPlayer observer : server.getPlayerList().getPlayers()) {
             showToObserver(visible, observer);
         }
     }
@@ -149,6 +157,7 @@ public class VanishManager {
         }
 
         server.tell(new TickTask(server.getTickCount() + 1, () -> {
+            if (observer.hasDisconnected()) return;
             for (ServerPlayer vanished : server.getPlayerList().getPlayers()) {
                 if (vanishedPlayers.contains(vanished.getUUID())) {
                     hideFromObserver(vanished, observer);
@@ -168,7 +177,7 @@ public class VanishManager {
     }
 
     private static void hideFromObserver(ServerPlayer vanished, ServerPlayer observer) {
-        if (observer == null || vanished == null || observer.getUUID().equals(vanished.getUUID())) {
+        if (observer == null || vanished == null || observer.hasDisconnected() || observer.getUUID().equals(vanished.getUUID())) {
             return;
         }
 
@@ -184,7 +193,7 @@ public class VanishManager {
     }
 
     private static void showToObserver(ServerPlayer visible, ServerPlayer observer) {
-        if (observer == null || visible == null || observer.getUUID().equals(visible.getUUID())) {
+        if (observer == null || visible == null || observer.hasDisconnected() || observer.getUUID().equals(visible.getUUID())) {
             return;
         }
 

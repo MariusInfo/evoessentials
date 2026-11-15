@@ -20,8 +20,8 @@ public class FlyCommand {
                     // 0. Detectăm pe ce server suntem pe baza portului!
                     // Serverul Creative are portul 5002
                     // ========================================================
-                    int port = player.getServer().getPort();
-                    boolean isCreative = (port == 5002);
+                    int port = player.getServer() != null ? player.getServer().getPort() : -1;
+                    boolean isCreative = (port == 5002) || player.isCreative();
 
                     // ========================================================
                     // 1. Verificăm cât timp are voie să zboare

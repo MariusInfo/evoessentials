@@ -19,13 +19,13 @@ public class C2S_TpaActionPacket {
     }
 
     public C2S_TpaActionPacket(FriendlyByteBuf buf) {
-        this.action = buf.readUtf();
-        this.targetName = buf.readUtf();
+        this.action = buf.readUtf(16);
+        this.targetName = buf.readUtf(32);
     }
 
     public void toBytes(FriendlyByteBuf buf) {
-        buf.writeUtf(action);
-        buf.writeUtf(targetName);
+        buf.writeUtf(action != null ? action : "", 16);
+        buf.writeUtf(targetName != null ? targetName : "", 32);
     }
 
     public boolean handle(Supplier<NetworkEvent.Context> supplier) {
